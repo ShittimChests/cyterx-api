@@ -32,6 +32,7 @@ const defaultOperationsSettings: OperationsSettings = {
   SelfUseModeEnabled: false,
   ErrorOverrideEnabled: false,
   ErrorOverrideKeywords: 'No available\nquota\ncredits\ntop-up',
+  ChannelFailoverEnabled: false,
   QuotaRemindThreshold: '',
   SMTPServer: '',
   SMTPPort: '',

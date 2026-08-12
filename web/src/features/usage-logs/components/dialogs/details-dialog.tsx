@@ -1041,6 +1041,15 @@ export function DetailsDialog(props: DetailsDialogProps) {
           />
         )}
 
+        {/* Global model alias */}
+        {other?.requested_model_alias && (
+          <DetailRow
+            label={t('Requested Alias')}
+            value={other.requested_model_alias}
+            mono
+          />
+        )}
+
         {/* Model mapping */}
         {other?.is_model_mapped && other?.upstream_model_name && (
           <DetailSection label={t('Model Mapping')}>

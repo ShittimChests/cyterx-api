@@ -17,6 +17,12 @@ type RetryParam struct {
 	RequestPath  string
 	Retry        *int
 	resetNextTry bool
+	// FailoverEnabled 表示渠道故障转移已开启：选择渠道时排除 ExcludeChannelIds
+	// 中已失败的渠道，auto 分组在当前分组候选用尽后才切换到下一个分组
+	// （不再按 RetryTimes 提前切组）。
+	FailoverEnabled bool
+	// ExcludeChannelIds 记录本次请求中已失败的渠道，跨优先级/跨分组累积，不重置。
+	ExcludeChannelIds map[int]bool
 }
 
 func (p *RetryParam) GetRetry() int {
@@ -115,7 +121,7 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 			}
 			logger.LogDebug(param.Ctx, "Auto selecting group: %s, priorityRetry: %d", autoGroup, priorityRetry)
 
-			channel, _ = model.GetRandomSatisfiedChannel(autoGroup, param.ModelName, priorityRetry, param.RequestPath)
+			channel, _ = model.GetRandomSatisfiedChannel(autoGroup, param.ModelName, priorityRetry, param.RequestPath, param.ExcludeChannelIds)
 			if channel == nil {
 				// Current group has no available channel for this model, try next group
 				// 当前分组没有该模型的可用渠道，尝试下一个分组
@@ -134,7 +140,9 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 
 			// Prepare state for next retry
 			// 为下一次重试准备状态
-			if crossGroupRetry && priorityRetry >= common.RetryTimes {
+			// 故障转移模式下不按 RetryTimes 提前切组（RetryTimes 可能为 0），
+			// 改为当前分组候选用尽（channel == nil）时才推进分组。
+			if !param.FailoverEnabled && crossGroupRetry && priorityRetry >= common.RetryTimes {
 				// Current group has exhausted all retries, prepare to switch to next group
 				// This request still uses current group, but next retry will use next group
 				// 当前分组已用完所有重试次数，准备切换到下一个分组
@@ -153,7 +161,7 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 			break
 		}
 	} else {
-		channel, err = model.GetRandomSatisfiedChannel(param.TokenGroup, param.ModelName, param.GetRetry(), param.RequestPath)
+		channel, err = model.GetRandomSatisfiedChannel(param.TokenGroup, param.ModelName, param.GetRetry(), param.RequestPath, param.ExcludeChannelIds)
 		if err != nil {
 			return nil, param.TokenGroup, err
 		}

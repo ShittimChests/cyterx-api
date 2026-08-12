@@ -49,6 +49,7 @@ const behaviorSchema = z.object({
   SelfUseModeEnabled: z.boolean(),
   ErrorOverrideEnabled: z.boolean(),
   ErrorOverrideKeywords: z.string(),
+  ChannelFailoverEnabled: z.boolean(),
 })
 
 type BehaviorFormValues = z.infer<typeof behaviorSchema>
@@ -198,6 +199,29 @@ export function SystemBehaviorSection({
               )}
             />
           )}
+
+          <FormField
+            control={form.control}
+            name='ChannelFailoverEnabled'
+            render={({ field }) => (
+              <SettingsSwitchItem>
+                <SettingsSwitchContent>
+                  <FormLabel>{t('Channel Failover')}</FormLabel>
+                  <FormDescription>
+                    {t(
+                      'Automatically move a failed request to another channel serving the same model in the same group, independent of retry times'
+                    )}
+                  </FormDescription>
+                </SettingsSwitchContent>
+                <FormControl>
+                  <Switch
+                    checked={field.value}
+                    onCheckedChange={field.onChange}
+                  />
+                </FormControl>
+              </SettingsSwitchItem>
+            )}
+          />
         </SettingsForm>
       </Form>
     </SettingsSection>

@@ -24,6 +24,7 @@ import { ClaudeSettingsCard } from './claude-settings-card'
 import { GeminiSettingsCard } from './gemini-settings-card'
 import { GlobalSettingsCard } from './global-settings-card'
 import { GrokSettingsCard } from './grok-settings-card'
+import { ModelAliasSection } from './model-alias-section'
 import { RoutingReliabilitySection } from './routing-reliability-section'
 
 function formatJsonForEditor(value: string, fallback: string) {
@@ -61,6 +62,20 @@ const MODELS_SECTIONS = [
             ping_interval_seconds:
               settings['general_setting.ping_interval_seconds'],
           },
+        }}
+      />
+    ),
+  },
+  {
+    id: 'model-alias',
+    titleKey: 'Global Model Alias',
+    build: (settings: ModelSettings) => (
+      <ModelAliasSection
+        defaultValues={{
+          'model_alias_setting.mapping': formatJsonForEditor(
+            settings['model_alias_setting.mapping'],
+            '{}'
+          ),
         }}
       />
     ),

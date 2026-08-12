@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -19,10 +20,12 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/model_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 type ModelRequest struct {
@@ -38,6 +41,20 @@ func Distribute() func(c *gin.Context) {
 		if err != nil {
 			abortWithOpenAiMessage(c, http.StatusBadRequest, i18n.T(c, i18n.MsgDistributorInvalidRequest, map[string]any{"Error": err.Error()}))
 			return
+		}
+		// 全局别名前置映射：在 token 模型校验与渠道选择之前把别名解析为真实模型，
+		// 后续路由、计费、日志主模型名全部按真实模型走。
+		if modelRequest.Model != "" {
+			resolvedModel, aliasApplied, aliasErr := model_setting.ResolveModelAlias(modelRequest.Model)
+			if aliasErr != nil {
+				abortWithOpenAiMessage(c, http.StatusInternalServerError, aliasErr.Error())
+				return
+			}
+			if aliasApplied {
+				common.SetContextKey(c, constant.ContextKeyRequestedModelAlias, modelRequest.Model)
+				rewriteRequestBodyModel(c, resolvedModel)
+				modelRequest.Model = resolvedModel
+			}
 		}
 		if ok {
 			id, err := strconv.Atoi(channelId.(string))
@@ -168,6 +185,34 @@ func Distribute() func(c *gin.Context) {
 			service.RecordChannelAffinity(c, channel.Id)
 		}
 	}
+}
+
+// rewriteRequestBodyModel 将 JSON 请求体中已存在的 model 字段替换为真实模型名，
+// 保证 pass-through 透传路径不会把别名泄露给上游。仅在请求体为 JSON 且包含
+// model 字段时改写；改写失败时降级为不改写（标准 DTO 路径仍会用
+// UpstreamModelName 重建请求体，不受影响）。
+func rewriteRequestBodyModel(c *gin.Context, modelName string) {
+	if !strings.HasPrefix(c.Request.Header.Get("Content-Type"), "application/json") {
+		return
+	}
+	storage, err := common.GetBodyStorage(c)
+	if err != nil {
+		return
+	}
+	raw, err := storage.Bytes()
+	if err != nil {
+		return
+	}
+	if !gjson.GetBytes(raw, "model").Exists() {
+		return
+	}
+	patched, err := sjson.SetBytes(raw, "model", modelName)
+	if err != nil {
+		return
+	}
+	common.CleanupBodyStorage(c)
+	c.Set(common.KeyRequestBody, patched)
+	c.Request.Body = io.NopCloser(bytes.NewReader(patched))
 }
 
 // channelSupportsRequestPath reports whether a channel can serve the request path.

@@ -90,9 +90,15 @@ func getPriority(group string, model string, retry int) (int, error) {
 	return priorityToUse, nil
 }
 
-func getChannelQuery(group string, model string, retry int) (*gorm.DB, error) {
+func getChannelQuery(group string, model string, retry int, excludeChannelIds []int) (*gorm.DB, error) {
 	maxPrioritySubQuery := DB.Model(&Ability{}).Select("MAX(priority)").Where(commonGroupCol+" = ? and model = ? and enabled = ?", group, model, true)
+	if len(excludeChannelIds) > 0 {
+		maxPrioritySubQuery = maxPrioritySubQuery.Where("channel_id NOT IN ?", excludeChannelIds)
+	}
 	channelQuery := DB.Where(commonGroupCol+" = ? and model = ? and enabled = ? and priority = (?)", group, model, true, maxPrioritySubQuery)
+	if len(excludeChannelIds) > 0 {
+		channelQuery = channelQuery.Where("channel_id NOT IN ?", excludeChannelIds)
+	}
 	if retry != 0 {
 		priority, err := getPriority(group, model, retry)
 		if err != nil {
@@ -105,11 +111,23 @@ func getChannelQuery(group string, model string, retry int) (*gorm.DB, error) {
 	return channelQuery, nil
 }
 
-func GetChannel(group string, model string, retry int, requestPath string) (*Channel, error) {
+// GetChannel 是 GetRandomSatisfiedChannel 在关闭内存缓存时的 DB 查询路径。
+// excludeChannelIds 非空时（渠道故障转移）忽略 retry 优先级索引，
+// 在排除已失败渠道后的剩余候选中取最高优先级并加权随机。
+func GetChannel(group string, model string, retry int, requestPath string, excludeChannelIds map[int]bool) (*Channel, error) {
 	var abilities []Ability
 
+	var excludeIds []int
+	if len(excludeChannelIds) > 0 {
+		excludeIds = make([]int, 0, len(excludeChannelIds))
+		for channelId := range excludeChannelIds {
+			excludeIds = append(excludeIds, channelId)
+		}
+		retry = 0
+	}
+
 	var err error = nil
-	channelQuery, err := getChannelQuery(group, model, retry)
+	channelQuery, err := getChannelQuery(group, model, retry, excludeIds)
 	if err != nil {
 		return nil, err
 	}

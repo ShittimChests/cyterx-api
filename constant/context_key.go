@@ -9,6 +9,10 @@ const (
 
 	ContextKeyOriginalModel    ContextKey = "original_model"
 	ContextKeyRequestStartTime ContextKey = "request_start_time"
+	// ContextKeyRequestedModelAlias stores the user's originally requested model
+	// name when a global model alias was resolved to a real model before channel
+	// selection. Used for log annotations only.
+	ContextKeyRequestedModelAlias ContextKey = "requested_model_alias"
 
 	/* token related keys */
 	ContextKeyTokenUnlimited         ContextKey = "token_unlimited_quota"

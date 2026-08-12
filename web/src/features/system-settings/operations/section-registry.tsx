@@ -38,6 +38,7 @@ const OPERATIONS_SECTIONS = [
           SelfUseModeEnabled: settings.SelfUseModeEnabled,
           ErrorOverrideEnabled: settings.ErrorOverrideEnabled,
           ErrorOverrideKeywords: settings.ErrorOverrideKeywords,
+          ChannelFailoverEnabled: settings.ChannelFailoverEnabled,
         }}
       />
     ),
