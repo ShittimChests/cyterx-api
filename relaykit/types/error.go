@@ -192,8 +192,12 @@ func (e *NewAPIError) MarkUpstreamOrigin() {
 // ReplaceMessage rewrites the user-facing message on every representation of the
 // error while preserving StatusCode, type and code. Unlike SetMessage it also
 // updates RelayError, because ToOpenAIError/ToClaudeError return the provider
-// payload verbatim for upstream errors and never read Err. Upstream metadata is
-// dropped because it carries the raw provider error body.
+// payload verbatim for upstream errors and never read Err.
+//
+// Metadata and Param are cleared alongside the message: metadata carries the raw
+// provider error body, and Param carries provider-supplied detail such as an
+// upstream request id (see the Ali rerank adaptor). Leaving either in place would
+// keep leaking the upstream trail that replacing the message is meant to hide.
 func (e *NewAPIError) ReplaceMessage(message string) {
 	if e == nil {
 		return
@@ -204,6 +208,7 @@ func (e *NewAPIError) ReplaceMessage(message string) {
 	case OpenAIError:
 		relayError.Message = message
 		relayError.Metadata = nil
+		relayError.Param = ""
 		e.RelayError = relayError
 	case ClaudeError:
 		relayError.Message = message

@@ -94,7 +94,7 @@ func (a *TaskAdaptor) DoResponse(c *gin.Context, resp *http.Response, info *rela
 	}
 
 	if hResp.BaseResp.StatusCode != StatusSuccess {
-		taskErr = service.TaskErrorWrapper(
+		taskErr = service.TaskErrorWrapperUpstream(
 			fmt.Errorf("hailuo api error: %s", hResp.BaseResp.StatusMsg),
 			strconv.Itoa(hResp.BaseResp.StatusCode),
 			http.StatusBadRequest,

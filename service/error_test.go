@@ -170,6 +170,59 @@ func TestRelayErrorHandlerIOErrorNotMarkedUpstream(t *testing.T) {
 		"I/O failure reading upstream body is a local error and must not be marked upstream")
 }
 
+// The upstream marker must follow the text, not merely the position in the function:
+// a body that fails to parse yields a message this site builds from the status code
+// alone, so it stays local unless the raw body is echoed back into it.
+func TestRelayErrorHandlerMarksUpstreamPerPath(t *testing.T) {
+	cases := []struct {
+		name             string
+		body             string
+		showBodyWhenFail bool
+		wantUpstream     bool
+	}{
+		{
+			name:             "unparseable body without echo stays local",
+			body:             "<html>502 Bad Gateway</html>",
+			showBodyWhenFail: false,
+			wantUpstream:     false,
+		},
+		{
+			name:             "unparseable body echoed into message is upstream",
+			body:             "<html>502 Bad Gateway</html>",
+			showBodyWhenFail: true,
+			wantUpstream:     true,
+		},
+		{
+			name:             "structured provider error is upstream",
+			body:             `{"error":{"message":"You exceeded your current quota","type":"insufficient_quota"}}`,
+			showBodyWhenFail: false,
+			wantUpstream:     true,
+		},
+		{
+			name:             "plain message body is upstream",
+			body:             `{"message":"Please top up your credits"}`,
+			showBodyWhenFail: false,
+			wantUpstream:     true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			withDebugEnabled(t, false)
+
+			resp := &http.Response{
+				StatusCode: http.StatusBadGateway,
+				Body:       io.NopCloser(strings.NewReader(tc.body)),
+			}
+
+			newAPIError := RelayErrorHandler(context.Background(), resp, tc.showBodyWhenFail)
+
+			require.NotNil(t, newAPIError)
+			require.Equal(t, tc.wantUpstream, types.IsFromUpstreamError(newAPIError))
+		})
+	}
+}
+
 // errReader is an io.ReadCloser whose Read always returns an error.
 type errReader struct{}
 

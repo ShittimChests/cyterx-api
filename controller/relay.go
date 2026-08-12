@@ -684,9 +684,15 @@ func respondTaskError(c *gin.Context, taskErr *taskdto.TaskError) {
 	if taskErr.StatusCode == http.StatusTooManyRequests {
 		taskErr.Message = "当前分组上游负载已饱和，请稍后再试"
 	}
-	// LocalError 为 false 表示文案来自上游任务平台，需按错误信息覆写设置处理
-	if !taskErr.LocalError {
-		taskErr.Message = operation_setting.OverrideUpstreamMessage(taskErr.Message)
+	// 仅覆写文案确实取自上游任务平台的错误。这里必须用正向标记 FromUpstream 判定：
+	// 本站自产错误（读 body 失败、解析失败、预扣费额度不足）默认 LocalError == false，
+	// 用 !LocalError 反推会把它们一并掩盖。
+	if taskErr.FromUpstream {
+		if overridden := operation_setting.OverrideUpstreamMessage(taskErr.Message); overridden != taskErr.Message {
+			// 覆写前先记录原始上游文案，后台日志与排障始终可见全文
+			logger.LogError(c, fmt.Sprintf("task upstream error overridden: %s", common.LocalLogPreview(taskErr.Message)))
+			taskErr.Message = overridden
+		}
 	}
 	c.JSON(taskErr.StatusCode, taskErr)
 }

@@ -73,6 +73,7 @@ func TestReplaceMessage_OpenAIError(t *testing.T) {
 		Message:  "No available channel for model gpt-4o under group default",
 		Type:     "upstream_error",
 		Code:     "no_available_channel",
+		Param:    "upstream-request-id-123",
 		Metadata: metadata,
 	}, http.StatusServiceUnavailable)
 	e.Metadata = metadata
@@ -86,6 +87,8 @@ func TestReplaceMessage_OpenAIError(t *testing.T) {
 	openAI := e.ToOpenAIError()
 	assert.Equal(t, "Service Unavailable", openAI.Message)
 	assert.Nil(t, openAI.Metadata)
+	// Param carries provider detail such as an upstream request id and must not survive.
+	assert.Equal(t, "", openAI.Param)
 
 	// Preserved fields.
 	assert.Equal(t, http.StatusServiceUnavailable, e.StatusCode)

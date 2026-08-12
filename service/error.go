@@ -92,10 +92,6 @@ func RelayErrorHandler(ctx context.Context, resp *http.Response, showBodyWhenFai
 		// 读取上游响应体失败是本站基础设施错误，文案并非来自上游，不应标记上游来源
 		return
 	}
-	// 从这里开始，后续所有返回路径的错误文案均取自上游响应体，标记后可被错误信息覆写识别
-	defer func() {
-		newApiErr.MarkUpstreamOrigin()
-	}()
 
 	CloseResponseBodyGracefully(resp)
 	var errResponse dto.GeneralErrorResponse
@@ -111,8 +107,12 @@ func RelayErrorHandler(ctx context.Context, resp *http.Response, showBodyWhenFai
 	err = common.Unmarshal(responseBody, &errResponse)
 	if err != nil {
 		if showBodyWhenFail {
+			// 文案内嵌上游响应体原文，属于上游来源
 			newApiErr.Err = buildErrWithBody("")
+			newApiErr.MarkUpstreamOrigin()
 		} else {
+			// 响应体解析失败且不回显 body 时，文案完全由本站生成（只含状态码），
+			// 不标记上游来源，避免覆写关键词误伤本站文案
 			logger.LogError(ctx, fmt.Sprintf("bad response status code %d, body: %s", resp.StatusCode, responseBodyPreview))
 			newApiErr.Err = fmt.Errorf("bad response status code %d", resp.StatusCode)
 		}
@@ -123,7 +123,7 @@ func RelayErrorHandler(ctx context.Context, resp *http.Response, showBodyWhenFai
 		// General format error (OpenAI, Anthropic, Gemini, etc.)
 		oaiError := errResponse.TryToOpenAIError()
 		if oaiError != nil {
-			newApiErr = types.WithOpenAIError(*oaiError, resp.StatusCode)
+			newApiErr = types.WithUpstreamOpenAIError(*oaiError, resp.StatusCode)
 			if showBodyWhenFail {
 				newApiErr.Err = buildErrWithBody(newApiErr.Error())
 			}
@@ -137,6 +137,8 @@ func RelayErrorHandler(ctx context.Context, resp *http.Response, showBodyWhenFai
 		logger.LogError(ctx, fmt.Sprintf("bad response status code %d with empty error message, body: %s", resp.StatusCode, responseBodyPreview))
 	}
 	newApiErr = types.NewOpenAIError(errors.New(message), types.ErrorCodeBadResponseStatusCode, resp.StatusCode)
+	// message 取自上游响应体（errResponse.ToMessage()），标记为上游来源
+	newApiErr.MarkUpstreamOrigin()
 	if showBodyWhenFail {
 		newApiErr.Err = buildErrWithBody(newApiErr.Error())
 	}
@@ -203,6 +205,15 @@ func TaskErrorWrapperLocal(err error, code string, statusCode int) *taskdto.Task
 	return openaiErr
 }
 
+// TaskErrorWrapperUpstream 包装文案取自上游任务平台响应体的错误，标记后可被错误信息覆写识别。
+// 适配器把上游返回的 message/code 直接塞进错误时必须用它，而不是 TaskErrorWrapper —— 后者
+// 同样服务于本站自产的读取/解析失败。
+func TaskErrorWrapperUpstream(err error, code string, statusCode int) *taskdto.TaskError {
+	taskErr := TaskErrorWrapper(err, code, statusCode)
+	taskErr.FromUpstream = true
+	return taskErr
+}
+
 func TaskErrorWrapper(err error, code string, statusCode int) *taskdto.TaskError {
 	text := err.Error()
 	lowerText := strings.ToLower(text)
@@ -223,14 +234,17 @@ func TaskErrorWrapper(err error, code string, statusCode int) *taskdto.TaskError
 }
 
 // TaskErrorFromAPIError 将 PreConsumeBilling 返回的 NewAPIError 转换为 TaskError。
+// 预扣费错误（额度不足、订阅未配置等）由本站产生，FromUpstream 保持 false，
+// 文案不会被错误信息覆写掩盖，用户仍能看到真实的额度原因。
 func TaskErrorFromAPIError(apiErr *types.NewAPIError) *taskdto.TaskError {
 	if apiErr == nil {
 		return nil
 	}
 	return &taskdto.TaskError{
-		Code:       string(apiErr.GetErrorCode()),
-		Message:    apiErr.Err.Error(),
-		StatusCode: apiErr.StatusCode,
-		Error:      apiErr.Err,
+		Code:         string(apiErr.GetErrorCode()),
+		Message:      apiErr.Err.Error(),
+		StatusCode:   apiErr.StatusCode,
+		FromUpstream: types.IsFromUpstreamError(apiErr),
+		Error:        apiErr.Err,
 	}
 }
