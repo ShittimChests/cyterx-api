@@ -14,6 +14,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/system_setting"
 
 	"github.com/gin-gonic/gin"
@@ -332,11 +333,13 @@ func GetUserMidjourney(c *gin.Context) {
 	items := model.GetAllUserTask(userId, pageInfo.GetStartIdx(), pageInfo.GetPageSize(), queryParams)
 	total := model.CountAllUserTask(userId, queryParams)
 
-	if setting.MjForwardUrlEnabled {
-		for i, midjourney := range items {
+	for _, midjourney := range items {
+		if setting.MjForwardUrlEnabled {
 			midjourney.ImageUrl = system_setting.ServerAddress + "/mj/image/" + midjourney.MjId
-			items[i] = midjourney
 		}
+		// 面向用户的 MJ 任务列表同样是上游失败原因的出口，与 /mj/task 查询
+		// （coverMidjourneyTaskDto）保持一致；管理员列表 GetAllMidjourney 保留原文。
+		midjourney.FailReason = operation_setting.OverrideUpstreamMessage(midjourney.FailReason)
 	}
 	pageInfo.SetTotal(int(total))
 	pageInfo.SetItems(items)

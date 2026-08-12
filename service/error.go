@@ -248,3 +248,24 @@ func TaskErrorFromAPIError(apiErr *types.NewAPIError) *taskdto.TaskError {
 		Error:        apiErr.Err,
 	}
 }
+
+// APIErrorFromTaskError 是 TaskErrorFromAPIError 的反向转换，供任务链路复用 relay 的渠道
+// 错误处理（processChannelError：渠道自动禁用判定与用户可见的错误日志）。
+//
+// FromUpstream 必须一并带过去：错误日志的 Content 会通过 /api/log/self 回显给用户，
+// 是和响应体同级的对外出口。丢掉标记会让任务链路的日志始终写入上游原文，客户端在响应里
+// 看到 Service Unavailable，转头在日志页仍能读到上游账务细节。
+func APIErrorFromTaskError(taskErr *taskdto.TaskError) *types.NewAPIError {
+	if taskErr == nil {
+		return nil
+	}
+	err := taskErr.Error
+	if err == nil {
+		err = errors.New(taskErr.Message)
+	}
+	apiErr := types.NewOpenAIError(err, types.ErrorCodeBadResponseStatusCode, taskErr.StatusCode)
+	if taskErr.FromUpstream {
+		apiErr.MarkUpstreamOrigin()
+	}
+	return apiErr
+}

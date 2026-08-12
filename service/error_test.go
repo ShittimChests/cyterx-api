@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	taskdto "github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -221,6 +223,59 @@ func TestRelayErrorHandlerMarksUpstreamPerPath(t *testing.T) {
 			require.Equal(t, tc.wantUpstream, types.IsFromUpstreamError(newAPIError))
 		})
 	}
+}
+
+// The task relay loop reuses processChannelError for channel auto-disable and for the
+// user-visible error log, so it converts TaskError back into NewAPIError. The upstream
+// marker has to survive that conversion: without it the log always records the raw
+// upstream text, and a user who sees "Service Unavailable" in the response can still
+// read the upstream billing details on the log page.
+func TestAPIErrorFromTaskError(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil task error converts to nil", func(t *testing.T) {
+		t.Parallel()
+		require.Nil(t, APIErrorFromTaskError(nil))
+	})
+
+	t.Run("upstream marker and status code survive the conversion", func(t *testing.T) {
+		t.Parallel()
+
+		taskErr := TaskErrorWrapperUpstream(errors.New("insufficient credits"), "fail_to_fetch_task", http.StatusPaymentRequired)
+		apiErr := APIErrorFromTaskError(taskErr)
+
+		require.NotNil(t, apiErr)
+		require.True(t, types.IsFromUpstreamError(apiErr))
+		require.Equal(t, http.StatusPaymentRequired, apiErr.StatusCode)
+		require.Equal(t, "insufficient credits", apiErr.Error())
+	})
+
+	t.Run("locally produced task errors stay local", func(t *testing.T) {
+		t.Parallel()
+
+		taskErr := TaskErrorWrapperLocal(errors.New("video_id is required"), "invalid_request", http.StatusBadRequest)
+		apiErr := APIErrorFromTaskError(taskErr)
+
+		require.NotNil(t, apiErr)
+		require.False(t, types.IsFromUpstreamError(apiErr))
+		require.Equal(t, "video_id is required", apiErr.Error())
+	})
+
+	// TaskErrorFromAPIError leaves Error unset when the source carried no wrapped error,
+	// so the message is the only text available.
+	t.Run("falls back to Message when Error is nil", func(t *testing.T) {
+		t.Parallel()
+
+		apiErr := APIErrorFromTaskError(&taskdto.TaskError{
+			Message:      "upstream rejected the request",
+			StatusCode:   http.StatusBadGateway,
+			FromUpstream: true,
+		})
+
+		require.NotNil(t, apiErr)
+		require.Equal(t, "upstream rejected the request", apiErr.Error())
+		require.True(t, types.IsFromUpstreamError(apiErr))
+	})
 }
 
 // errReader is an io.ReadCloser whose Read always returns an error.

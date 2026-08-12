@@ -92,11 +92,11 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	defer func() {
 		if newAPIError != nil {
 			logger.LogError(c, fmt.Sprintf("relay error: %s", common.LocalLogPreview(newAPIError.Error())))
-			// 必须在错误日志之后执行：日志与渠道禁用判定始终使用原始上游文案
-			if operation_setting.OverrideUpstreamError(newAPIError) {
-				// 覆写后的错误须用 ReplaceMessage 附加 request id：上游错误的 ToOpenAIError()
-				// 直接返回 RelayError，不读 Err，SetMessage 改不到响应体
-				newAPIError.ReplaceMessage(common.MessageWithRequestId(newAPIError.Error(), requestId))
+			// 必须在错误日志之后执行：日志与渠道禁用判定始终使用原始上游文案。
+			// 覆写文案与 request id 一次写入：上游错误的 ToOpenAIError() 直接返回 RelayError，
+			// 不读 Err，SetMessage 改不到响应体，必须走 ReplaceMessage
+			if operation_setting.ShouldOverrideUpstreamError(newAPIError) {
+				newAPIError.ReplaceMessage(common.MessageWithRequestId(operation_setting.ErrorOverrideMessage, requestId))
 			} else {
 				newAPIError.SetMessage(common.MessageWithRequestId(newAPIError.Error(), requestId))
 			}
@@ -445,7 +445,11 @@ func processChannelError(c *gin.Context, channelError types.ChannelError, err *t
 		logContent := err.MaskSensitiveErrorWithStatusCode()
 		if operation_setting.ShouldOverrideUpstreamError(err) {
 			adminInfo["original_error"] = logContent
-			logContent = fmt.Sprintf("status_code=%d, %s", err.StatusCode, operation_setting.ErrorOverrideMessage)
+			logContent = operation_setting.ErrorOverrideMessage
+			// 与 MaskSensitiveErrorWithStatusCode 保持一致：无状态码时不写 status_code=0
+			if err.StatusCode != 0 {
+				logContent = fmt.Sprintf("status_code=%d, %s", err.StatusCode, logContent)
+			}
 		}
 		other["admin_info"] = adminInfo
 		startTime := common.GetContextKeyTime(c, constant.ContextKeyRequestStartTime)
@@ -643,7 +647,7 @@ func RelayTask(c *gin.Context) {
 			processChannelError(c,
 				*types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey,
 					common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()),
-				types.NewOpenAIError(taskErr.Error, types.ErrorCodeBadResponseStatusCode, taskErr.StatusCode))
+				service.APIErrorFromTaskError(taskErr))
 		}
 
 		if taskFailoverEnabled {

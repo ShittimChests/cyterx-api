@@ -21,6 +21,8 @@ import (
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 type TaskSubmitResult struct {
@@ -407,7 +409,7 @@ func videoFetchByIDRespBodyBuilder(c *gin.Context) (respBody []byte, taskResp *d
 				taskResp = service.TaskErrorWrapper(err, "convert_to_openai_video_failed", http.StatusInternalServerError)
 				return
 			}
-			respBody = openAIVideoData
+			respBody = overrideOpenAIVideoUpstreamError(openAIVideoData)
 			return
 		}
 		taskResp = service.TaskErrorWrapperLocal(fmt.Errorf("not_implemented:%s", originTask.Platform), "not_implemented", http.StatusNotImplemented)
@@ -546,6 +548,30 @@ func mapTaskStatusToSimple(status model.TaskStatus) string {
 	default:
 		return "processing"
 	}
+}
+
+// overrideOpenAIVideoUpstreamError 覆写 OpenAI Video 响应体里的上游错误文案。
+// /v1/videos/{id} 走各 adaptor 的 ConvertToOpenAIVideo，响应体由落库的上游原始数据构建
+// （service/task_polling.go 的 task.Data），不经过 TaskModel2Dto，是上游失败文案的另一个
+// 用户可见出口。
+//
+// 直接改写 JSON 而不是反序列化成 dto.OpenAIVideo 再序列化：sora 的 converter 把上游对象整体
+// 透传，结构体往返会丢掉上游多返回的字段。与 relay 链路一致，只替换 message，error.code 保留。
+func overrideOpenAIVideoUpstreamError(respBody []byte) []byte {
+	message := gjson.GetBytes(respBody, "error.message")
+	if message.Type != gjson.String || message.String() == "" {
+		return respBody
+	}
+	overridden := operation_setting.OverrideUpstreamMessage(message.String())
+	if overridden == message.String() {
+		return respBody
+	}
+	masked, err := sjson.SetBytes(respBody, "error.message", overridden)
+	if err != nil {
+		// 改写失败时宁可不返回上游原文
+		return []byte(fmt.Sprintf(`{"error":{"message":%q}}`, overridden))
+	}
+	return masked
 }
 
 // TaskModel2Dto 把任务模型转为对外 DTO。maskUpstreamFailReason 为 true 时对 FailReason
