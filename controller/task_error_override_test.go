@@ -94,6 +94,45 @@ func TestRespondTaskError_OverrideGate(t *testing.T) {
 	}
 }
 
+// Data carries json:"data" and reaches the client. Overriding Message while leaving a
+// field that may hold the upstream payload would defeat the override, so an overridden
+// task error must clear it — and a non-overridden one must keep it.
+func TestRespondTaskError_ClearsDataOnOverride(t *testing.T) {
+	enableTaskErrorOverride(t)
+	gin.SetMode(gin.TestMode)
+
+	t.Run("overridden error drops Data", func(t *testing.T) {
+		taskErr := service.TaskErrorWrapperUpstream(
+			errors.New("insufficient credits, please top up"),
+			"upstream_error", http.StatusPaymentRequired)
+		taskErr.Data = map[string]string{"raw": "upstream-billing-detail"}
+
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/video/generations", nil)
+
+		respondTaskError(c, taskErr)
+
+		require.Equal(t, operation_setting.ErrorOverrideMessage, taskErr.Message)
+		assert.Nil(t, taskErr.Data)
+	})
+
+	t.Run("untouched error keeps Data", func(t *testing.T) {
+		taskErr := service.TaskErrorWrapperUpstream(
+			errors.New("invalid prompt"), "upstream_error", http.StatusBadRequest)
+		taskErr.Data = map[string]string{"field": "prompt"}
+
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/video/generations", nil)
+
+		respondTaskError(c, taskErr)
+
+		require.Equal(t, "invalid prompt", taskErr.Message)
+		assert.NotNil(t, taskErr.Data)
+	})
+}
+
 // A 429 rewrite happens before the override and its text is this site's own, so it
 // must survive regardless of the upstream marker.
 func TestRespondTaskError_RateLimitMessagePreserved(t *testing.T) {

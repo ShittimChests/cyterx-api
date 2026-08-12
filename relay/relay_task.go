@@ -19,6 +19,7 @@ import (
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/gin-gonic/gin"
 )
 
@@ -335,7 +336,7 @@ func sunoFetchRespBodyBuilder(c *gin.Context) (respBody []byte, taskResp *dto.Ta
 			return
 		}
 		for _, task := range taskModels {
-			tasks = append(tasks, TaskModel2Dto(task))
+			tasks = append(tasks, TaskModel2Dto(task, true))
 		}
 	} else {
 		tasks = make([]any, 0)
@@ -363,7 +364,7 @@ func sunoFetchByIDRespBodyBuilder(c *gin.Context) (respBody []byte, taskResp *dt
 
 	respBody, err = common.Marshal(dto.TaskResponse[any]{
 		Code: "success",
-		Data: TaskModel2Dto(originTask),
+		Data: TaskModel2Dto(originTask, true),
 	})
 	return
 }
@@ -416,7 +417,7 @@ func videoFetchByIDRespBodyBuilder(c *gin.Context) (respBody []byte, taskResp *d
 	// 通用 TaskDto 格式
 	respBody, err = common.Marshal(dto.TaskResponse[any]{
 		Code: "success",
-		Data: TaskModel2Dto(originTask),
+		Data: TaskModel2Dto(originTask, true),
 	})
 	if err != nil {
 		taskResp = service.TaskErrorWrapper(err, "marshal_response_failed", http.StatusInternalServerError)
@@ -547,7 +548,20 @@ func mapTaskStatusToSimple(status model.TaskStatus) string {
 	}
 }
 
-func TaskModel2Dto(task *model.Task) *dto.TaskDto {
+// TaskModel2Dto 把任务模型转为对外 DTO。maskUpstreamFailReason 为 true 时对 FailReason
+// 应用错误信息覆写：异步任务把上游失败原因落库（service/task_polling.go 的
+// task.FailReason = taskResult.Reason），用户随后通过任务查询接口读到它，这是同一份上游
+// 文案的另一个出口。管理员视图传 false，始终看原文。
+//
+// 与 relay/task 链路不同，这里只能按关键词门控：Task 表没有来源标记列，补一列要跨三种
+// 数据库做迁移，代价与收益不匹配。本站自产的 FailReason 是「任务超时（%d分钟）」这类
+// 中文文案（sweepTimedOutTasks）和 upstream returned error 这类固定串（FailTaskInfo），
+// 都不含默认关键词；但管理员配置过宽的关键词时本站文案仍可能被误伤。
+func TaskModel2Dto(task *model.Task, maskUpstreamFailReason bool) *dto.TaskDto {
+	failReason := task.FailReason
+	if maskUpstreamFailReason {
+		failReason = operation_setting.OverrideUpstreamMessage(failReason)
+	}
 	return &dto.TaskDto{
 		ID:         task.ID,
 		CreatedAt:  task.CreatedAt,
@@ -560,7 +574,7 @@ func TaskModel2Dto(task *model.Task) *dto.TaskDto {
 		Quota:      task.Quota,
 		Action:     task.Action,
 		Status:     string(task.Status),
-		FailReason: task.FailReason,
+		FailReason: failReason,
 		ResultURL:  task.GetResultURL(),
 		SubmitTime: task.SubmitTime,
 		StartTime:  task.StartTime,

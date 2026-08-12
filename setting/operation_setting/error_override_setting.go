@@ -32,14 +32,20 @@ func ErrorOverrideKeywordsFromString(s string) {
 	}
 }
 
+// ShouldOverrideUpstreamError 报告该错误写给客户端时是否会被覆写，但不修改错误本身。
+// 供需要在覆写前分叉行为的调用方使用（例如错误日志要区分记录原文还是覆写后的文案）。
+func ShouldOverrideUpstreamError(err *types.NewAPIError) bool {
+	if !types.IsFromUpstreamError(err) {
+		return false
+	}
+	return shouldOverrideErrorMessage(err.Error())
+}
+
 // OverrideUpstreamError 在错误写给客户端前覆写其文案，返回是否已覆写。必须在错误日志记录
 // 之后调用，后台日志与渠道自动禁用判定始终使用原始上游文案。状态码、error.type、error.code
 // 保持不变。
 func OverrideUpstreamError(err *types.NewAPIError) bool {
-	if !types.IsFromUpstreamError(err) {
-		return false
-	}
-	if !shouldOverrideErrorMessage(err.Error()) {
+	if !ShouldOverrideUpstreamError(err) {
 		return false
 	}
 	err.ReplaceMessage(ErrorOverrideMessage)

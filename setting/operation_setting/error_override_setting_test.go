@@ -171,6 +171,33 @@ func TestOverrideUpstreamError_NilSafe(t *testing.T) {
 	require.NotPanics(t, func() { OverrideUpstreamError(nil) })
 }
 
+// ShouldOverrideUpstreamError answers the same question as OverrideUpstreamError but
+// must not mutate the error. processChannelError relies on that to decide what to write
+// into the user-visible error log while the untouched error still drives retry and
+// channel-disable decisions.
+func TestShouldOverrideUpstreamError_DoesNotMutate(t *testing.T) {
+	restoreOverrideState(t)
+
+	upstream := types.WithUpstreamOpenAIError(types.OpenAIError{
+		Message: "insufficient credits, please top up",
+		Type:    "upstream_error",
+		Code:    "credits_exhausted",
+	}, http.StatusPaymentRequired)
+
+	require.True(t, ShouldOverrideUpstreamError(upstream))
+	// Asking twice must stay stable, and the message must survive untouched.
+	require.True(t, ShouldOverrideUpstreamError(upstream))
+	assert.Equal(t, "insufficient credits, please top up", upstream.Error())
+	assert.Equal(t, "insufficient credits, please top up", upstream.ToOpenAIError().Message)
+
+	local := types.NewErrorWithStatusCode(
+		errors.New("用户额度不足, 剩余额度: $0.00"),
+		types.ErrorCodeInsufficientUserQuota, http.StatusPaymentRequired)
+	assert.False(t, ShouldOverrideUpstreamError(local))
+	require.NotPanics(t, func() { ShouldOverrideUpstreamError(nil) })
+	assert.False(t, ShouldOverrideUpstreamError(nil))
+}
+
 func TestOverrideUpstreamMessage_NoKeywords(t *testing.T) {
 	origEnabled := ErrorOverrideEnabled
 	origKeywords := ErrorOverrideKeywords
