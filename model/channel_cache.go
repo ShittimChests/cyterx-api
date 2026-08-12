@@ -111,10 +111,15 @@ func SyncChannelCache(frequency int) {
 	}
 }
 
-func GetRandomSatisfiedChannel(group string, model string, retry int, requestPath string) (*Channel, error) {
+// GetRandomSatisfiedChannel 按 group+model 选择一个可用渠道。retry 是优先级索引
+// （0=最高优先级组，组内按权重随机）。excludeChannelIds 非空时（渠道故障转移）：
+// 剔除已失败渠道后忽略 retry 索引，从剩余候选的最高优先级组内加权随机；
+// 剩余候选为空时返回 (nil, nil) 表示候选用尽。excludeChannelIds 为空时行为与
+// 传统路径完全一致。
+func GetRandomSatisfiedChannel(group string, model string, retry int, requestPath string, excludeChannelIds map[int]bool) (*Channel, error) {
 	// if memory cache is disabled, get channel directly from database
 	if !common.MemoryCacheEnabled {
-		return GetChannel(group, model, retry, requestPath)
+		return GetChannel(group, model, retry, requestPath, excludeChannelIds)
 	}
 
 	channelSyncLock.RLock()
@@ -127,6 +132,18 @@ func GetRandomSatisfiedChannel(group string, model string, retry int, requestPat
 	if len(channels) == 0 {
 		normalizedModel := ratio_setting.FormatMatchingModelName(model)
 		channels = filterChannelsByRequestPathAndModel(group2model2channels[group][normalizedModel], requestPath, model)
+	}
+
+	if len(excludeChannelIds) > 0 {
+		// 必须复制后剔除，缓存中的 slice 不可原地修改。
+		remaining := make([]int, 0, len(channels))
+		for _, channelId := range channels {
+			if !excludeChannelIds[channelId] {
+				remaining = append(remaining, channelId)
+			}
+		}
+		channels = remaining
+		retry = 0
 	}
 
 	if len(channels) == 0 {

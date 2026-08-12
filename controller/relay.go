@@ -181,22 +181,48 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		}
 	}()
 
+	failoverEnabled := operation_setting.ChannelFailoverEnabled
 	retryParam := &service.RetryParam{
-		Ctx:         c,
-		TokenGroup:  relayInfo.TokenGroup,
-		ModelName:   relayInfo.OriginModelName,
-		RequestPath: c.Request.URL.Path,
-		Retry:       common.GetPointer(0),
+		Ctx:             c,
+		TokenGroup:      relayInfo.TokenGroup,
+		ModelName:       relayInfo.OriginModelName,
+		RequestPath:     c.Request.URL.Path,
+		Retry:           common.GetPointer(0),
+		FailoverEnabled: failoverEnabled,
+	}
+	if failoverEnabled {
+		retryParam.ExcludeChannelIds = make(map[int]bool)
 	}
 	relayInfo.RetryIndex = 0
 	relayInfo.LastError = nil
 
-	for ; retryParam.GetRetry() <= common.RetryTimes; retryParam.IncreaseRetry() {
+	// 渠道故障转移开启时循环不受 RetryTimes 限制，靠"剩余候选渠道用尽"自然终止；
+	// maxChannelFailoverAttempts 只是防御性上限（每次失败都会新增一个排除渠道，
+	// 正常情况下候选耗尽会先发生）。
+	const maxChannelFailoverAttempts = 64
+	attempt := 0
+	var lastRelayError *types.NewAPIError
+
+	for ; ; retryParam.IncreaseRetry() {
+		if failoverEnabled {
+			if attempt >= maxChannelFailoverAttempts {
+				break
+			}
+		} else if retryParam.GetRetry() > common.RetryTimes {
+			break
+		}
+		attempt++
 		relayInfo.RetryIndex = retryParam.GetRetry()
 		channel, channelErr := getChannel(c, relayInfo, retryParam)
 		if channelErr != nil {
+			// 故障转移用尽候选渠道时，把最后一次上游错误返回给用户，
+			// 而不是"可用渠道不存在"。
+			if failoverEnabled && lastRelayError != nil {
+				newAPIError = lastRelayError
+			} else {
+				newAPIError = channelErr
+			}
 			logger.LogError(c, channelErr.Error())
-			newAPIError = channelErr
 			break
 		}
 		addUsedChannel(c, channel.Id)
@@ -235,10 +261,15 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 		newAPIError = service.NormalizeViolationFeeError(newAPIError)
 		relayInfo.LastError = newAPIError
+		lastRelayError = newAPIError
 
 		processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError)
 
-		if !shouldRetry(c, newAPIError, common.RetryTimes-retryParam.GetRetry()) {
+		if failoverEnabled {
+			retryParam.ExcludeChannelIds[channel.Id] = true
+		}
+
+		if !shouldRetry(c, newAPIError, common.RetryTimes-retryParam.GetRetry(), failoverEnabled) {
 			break
 		}
 	}
@@ -328,7 +359,7 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 	return channel, nil
 }
 
-func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) bool {
+func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int, failoverEnabled bool) bool {
 	if openaiErr == nil {
 		return false
 	}
@@ -341,7 +372,8 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 	if types.IsSkipRetryError(openaiErr) {
 		return false
 	}
-	if retryTimes <= 0 {
+	// 渠道故障转移开启时不受重试次数限制，转移由候选渠道耗尽自然终止。
+	if retryTimes <= 0 && !failoverEnabled {
 		return false
 	}
 	if _, ok := c.Get("specific_channel_id"); ok {
@@ -388,6 +420,9 @@ func processChannelError(c *gin.Context, channelError types.ChannelError, err *t
 		other["channel_id"] = channelId
 		other["channel_name"] = c.GetString("channel_name")
 		other["channel_type"] = c.GetInt("channel_type")
+		if alias := common.GetContextKeyString(c, constant.ContextKeyRequestedModelAlias); alias != "" {
+			other["requested_model_alias"] = alias
+		}
 		adminInfo := make(map[string]interface{})
 		adminInfo["use_channel"] = c.GetStringSlice("use_channel")
 		isMultiKey := common.GetContextKeyBool(c, constant.ContextKeyChannelIsMultiKey)
@@ -513,15 +548,34 @@ func RelayTask(c *gin.Context) {
 		}
 	}()
 
+	taskFailoverEnabled := operation_setting.ChannelFailoverEnabled
+	if lockedCh, ok := relayInfo.LockedChannel.(*model.Channel); ok && lockedCh != nil {
+		// 任务续跑锁定渠道时复用固定渠道，不做故障转移。
+		taskFailoverEnabled = false
+	}
 	retryParam := &service.RetryParam{
-		Ctx:         c,
-		TokenGroup:  relayInfo.TokenGroup,
-		ModelName:   relayInfo.OriginModelName,
-		RequestPath: c.Request.URL.Path,
-		Retry:       common.GetPointer(0),
+		Ctx:             c,
+		TokenGroup:      relayInfo.TokenGroup,
+		ModelName:       relayInfo.OriginModelName,
+		RequestPath:     c.Request.URL.Path,
+		Retry:           common.GetPointer(0),
+		FailoverEnabled: taskFailoverEnabled,
+	}
+	if taskFailoverEnabled {
+		retryParam.ExcludeChannelIds = make(map[int]bool)
 	}
 
-	for ; retryParam.GetRetry() <= common.RetryTimes; retryParam.IncreaseRetry() {
+	const maxTaskFailoverAttempts = 64
+	taskAttempt := 0
+	for ; ; retryParam.IncreaseRetry() {
+		if taskFailoverEnabled {
+			if taskAttempt >= maxTaskFailoverAttempts {
+				break
+			}
+		} else if retryParam.GetRetry() > common.RetryTimes {
+			break
+		}
+		taskAttempt++
 		var channel *model.Channel
 
 		if lockedCh, ok := relayInfo.LockedChannel.(*model.Channel); ok && lockedCh != nil {
@@ -566,7 +620,11 @@ func RelayTask(c *gin.Context) {
 				types.NewOpenAIError(taskErr.Error, types.ErrorCodeBadResponseStatusCode, taskErr.StatusCode))
 		}
 
-		if !shouldRetryTaskRelay(c, channel.Id, taskErr, common.RetryTimes-retryParam.GetRetry()) {
+		if taskFailoverEnabled {
+			retryParam.ExcludeChannelIds[channel.Id] = true
+		}
+
+		if !shouldRetryTaskRelay(c, channel.Id, taskErr, common.RetryTimes-retryParam.GetRetry(), taskFailoverEnabled) {
 			break
 		}
 	}
@@ -626,7 +684,8 @@ func shouldRetryTaskRelay(c *gin.Context, channelId int, taskErr *taskdto.TaskEr
 	if service.ShouldSkipRetryAfterChannelAffinityFailure(c) {
 		return false
 	}
-	if retryTimes <= 0 {
+	// 渠道故障转移开启时不受重试次数限制，转移由候选渠道耗尽自然终止。
+	if retryTimes <= 0 && !failoverEnabled {
 		return false
 	}
 	if _, ok := c.Get("specific_channel_id"); ok {

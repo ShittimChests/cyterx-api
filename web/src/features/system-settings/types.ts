@@ -192,6 +192,7 @@ export type ModelSettings = {
   'global.pass_through_request_enabled': boolean
   'global.thinking_model_blacklist': string
   'global.chat_completions_to_responses_policy': string
+  'model_alias_setting.mapping': string
   'general_setting.ping_interval_enabled': boolean
   'general_setting.ping_interval_seconds': number
   'gemini.safety_settings': string
@@ -340,6 +341,7 @@ export type OperationsSettings = {
   DefaultCollapseSidebar: boolean
   DemoSiteEnabled: boolean
   SelfUseModeEnabled: boolean
+  ChannelFailoverEnabled: boolean
   QuotaRemindThreshold: string
   SMTPServer: string
   SMTPPort: string
