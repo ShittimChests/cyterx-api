@@ -30,6 +30,10 @@ const defaultOperationsSettings: OperationsSettings = {
   DefaultCollapseSidebar: false,
   DemoSiteEnabled: false,
   SelfUseModeEnabled: false,
+  ErrorOverrideEnabled: false,
+  // 与后端 operation_setting.ErrorOverrideKeywords 的默认值保持一致（后端统一小写存储，
+  // 保存后回显也是小写，这里跟着用小写避免首次加载与保存后显示不一致）
+  ErrorOverrideKeywords: 'no available\nquota\ncredits\ntop-up',
   ChannelFailoverEnabled: false,
   QuotaRemindThreshold: '',
   SMTPServer: '',

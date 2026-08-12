@@ -203,7 +203,9 @@ func (a *TaskAdaptor) DoResponse(c *gin.Context, resp *http.Response, info *rela
 		return
 	}
 	if kResp.Code != 0 {
+		// LocalError 保持 true：该错误不重试。文案取自上游，需同时标记以便错误信息覆写生效。
 		taskErr = service.TaskErrorWrapperLocal(fmt.Errorf("%s", kResp.Message), "task_failed", http.StatusBadRequest)
+		taskErr.FromUpstream = true
 		return
 	}
 	ov := dto.NewOpenAIVideo()

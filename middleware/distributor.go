@@ -52,7 +52,7 @@ func Distribute() func(c *gin.Context) {
 			}
 			if aliasApplied {
 				common.SetContextKey(c, constant.ContextKeyRequestedModelAlias, modelRequest.Model)
-				rewriteRequestBodyModel(c, strings.TrimSuffix(resolvedModel, ratio_setting.CompactModelSuffix))
+				rewriteRequestBodyModel(c, resolvedModel)
 				modelRequest.Model = resolvedModel
 			}
 		}

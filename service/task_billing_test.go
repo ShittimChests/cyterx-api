@@ -12,6 +12,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/types"
 	"github.com/glebarez/sqlite"
 	"github.com/shopspring/decimal"
@@ -420,6 +421,73 @@ func TestRefundTaskQuota_FundingFailureKeepsPendingMarker(t *testing.T) {
 	assert.Equal(t, preConsumed, task.Quota)
 	assert.Equal(t, preConsumed, getTaskQuota(t, task.ID))
 	assert.Equal(t, int64(0), countLogs(t))
+}
+
+// The refund reason is the same upstream text the task query endpoints mask, and the
+// refund log is echoed to the user through /api/log/self. It therefore has to be
+// overridden before the row is written, with the original kept under admin_info —
+// model.formatUserLogs strips that whole key for non-admin views.
+func TestRefundTaskQuota_MasksUpstreamReason(t *testing.T) {
+	origEnabled := operation_setting.ErrorOverrideEnabled
+	origKeywords := operation_setting.ErrorOverrideKeywords
+	t.Cleanup(func() {
+		operation_setting.ErrorOverrideEnabled = origEnabled
+		operation_setting.ErrorOverrideKeywords = origKeywords
+	})
+	operation_setting.ErrorOverrideEnabled = true
+	operation_setting.ErrorOverrideKeywords = []string{"no available", "quota", "credits", "top-up"}
+
+	const upstreamReason = "insufficient credits, please top-up your account"
+	const localReason = "任务超时（30分钟）"
+
+	cases := []struct {
+		name         string
+		userID       int
+		reason       string
+		wantReason   string
+		wantOriginal string
+	}{
+		{
+			name:         "upstream reason is masked and the original moves to admin_info",
+			userID:       11,
+			reason:       upstreamReason,
+			wantReason:   operation_setting.ErrorOverrideMessage,
+			wantOriginal: upstreamReason,
+		},
+		{
+			name:       "local reason is written verbatim without admin_info",
+			userID:     12,
+			reason:     localReason,
+			wantReason: localReason,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			truncate(t)
+			const channelID, preConsumed = 11, 700
+			seedUser(t, tc.userID, 10000)
+			seedChannel(t, channelID)
+
+			task := makeTask(tc.userID, channelID, preConsumed, 0, BillingSourceWallet, 0)
+			require.NoError(t, model.DB.Create(task).Error)
+			require.True(t, RefundTaskQuota(context.Background(), task, tc.reason))
+
+			log := getLastLog(t)
+			require.NotNil(t, log)
+			other, err := common.StrToMap(log.Other)
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantReason, other["reason"])
+
+			if tc.wantOriginal == "" {
+				assert.NotContains(t, other, "admin_info")
+				return
+			}
+			adminInfo, ok := other["admin_info"].(map[string]interface{})
+			require.True(t, ok, "admin_info should carry the original reason")
+			assert.Equal(t, tc.wantOriginal, adminInfo["original_reason"])
+		})
+	}
 }
 
 // ===========================================================================

@@ -10,7 +10,11 @@ type TaskError struct {
 	Data       any    `json:"data"`
 	StatusCode int    `json:"-"`
 	LocalError bool   `json:"-"`
-	Error      error  `json:"-"`
+	// FromUpstream 表示 Message 的文案取自上游任务平台的响应体，而非本站生成。
+	// 错误信息覆写只作用于该标记为 true 的错误；LocalError 是重试判定用的独立维度，
+	// 不能反过来当作「来自上游」的依据（本站自产错误默认 LocalError == false）。
+	FromUpstream bool  `json:"-"`
+	Error        error `json:"-"`
 }
 
 type TaskData interface {

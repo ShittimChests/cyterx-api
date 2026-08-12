@@ -100,7 +100,7 @@ describe('API key group table cell', () => {
     domWindow.close()
   })
 
-  test('renders two unclipped rings and a localized Auto ratio when API data uses a nonlocalized string', async () => {
+  test('renders an unclipped ring and a localized Auto ratio when API data uses a nonlocalized string', async () => {
     const container = document.createElement('div')
     document.body.append(container)
     const root = createRoot(container)
@@ -123,12 +123,14 @@ describe('API key group table cell', () => {
     assert.equal(badgeCell.classList.contains('overflow-visible'), true)
     assert.equal(badgeCell.classList.contains('overflow-hidden'), false)
 
+    // AutoGroupBadge 在 ApiKeyGroupCell 中被停用（由 Cross-group StatusBadge 承担该位置），
+    // 因此 auto 分组只剩 GroupRatioBadge 一个带流光边框的 frame。
     const frames = container.querySelectorAll('[data-auto-group-frame]')
     const movingRings = container.querySelectorAll(
       '[data-auto-group-flow-border]'
     )
-    assert.equal(frames.length, 2)
-    assert.equal(movingRings.length, 2)
+    assert.equal(frames.length, 1)
+    assert.equal(movingRings.length, 1)
     for (const frame of frames) {
       assert.equal(frame.classList.contains('relative'), true)
       assert.equal(frame.classList.contains('overflow-visible'), true)
@@ -155,7 +157,7 @@ describe('API key group table cell', () => {
     container.remove()
   })
 
-  test('keeps static Auto frames but omits both moving layers for reduced motion', async () => {
+  test('keeps the static Auto frame but omits the moving layer for reduced motion', async () => {
     const container = document.createElement('div')
     document.body.append(container)
     const root = createRoot(container)
@@ -166,7 +168,7 @@ describe('API key group table cell', () => {
 
     assert.equal(
       container.querySelectorAll('[data-auto-group-frame]').length,
-      2
+      1
     )
     assert.equal(
       container.querySelectorAll('[data-auto-group-flow-border]').length,
@@ -177,7 +179,7 @@ describe('API key group table cell', () => {
     container.remove()
   })
 
-  test('shows only the Auto badge when ratio data is unavailable', async () => {
+  test('shows only the Cross-group badge when ratio data is unavailable', async () => {
     const container = document.createElement('div')
     document.body.append(container)
     const root = createRoot(container)
@@ -186,19 +188,21 @@ describe('API key group table cell', () => {
       root.render(<CellHarness group='auto' shouldReduceMotion={false} />)
     )
 
+    // 无 ratio 时 GroupRatioBadge 返回 null，auto 分组不渲染任何 frame，
+    // 只保留 Cross-group 状态徽章。
     assert.equal(
       container.querySelectorAll('[data-auto-group-frame]').length,
-      1
+      0
     )
     assert.equal(
       container.querySelectorAll('[data-auto-group-flow-border]').length,
-      1
+      0
     )
     assert.equal(
       container.querySelector('[data-auto-group-effect="ratio"]'),
       null
     )
-    assert.equal(container.textContent?.includes('Auto'), true)
+    assert.equal(container.textContent?.includes('Cross-group'), true)
     assert.equal(container.textContent?.includes('Ratio'), false)
 
     await act(async () => root.unmount())

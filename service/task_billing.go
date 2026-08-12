@@ -10,6 +10,7 @@ import (
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
@@ -184,6 +185,13 @@ func RefundTaskQuota(ctx context.Context, task *model.Task, reason string) bool 
 	// 3. 记录日志
 	other := taskBillingOther(task)
 	other["task_id"] = task.TaskID
+	// 退款日志会通过 /api/log/self 回显给用户，reason 与任务 FailReason 是同一份上游文案，
+	// 因此和 relay 的错误日志一样在写库前覆写，原文改记到 admin_info
+	// （model.formatUserLogs 会为普通用户剥离整个 admin_info）。
+	if masked := operation_setting.OverrideUpstreamMessage(reason); masked != reason {
+		other["admin_info"] = map[string]interface{}{"original_reason": reason}
+		reason = masked
+	}
 	other["reason"] = reason
 	model.RecordTaskBillingLog(model.RecordTaskBillingLogParams{
 		UserId:    task.UserId,

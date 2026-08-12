@@ -7,7 +7,6 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/setting/config"
-	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/QuantumNous/new-api/types"
 )
 
@@ -27,18 +26,13 @@ func init() {
 }
 
 // ResolveModelAlias 把全局别名解析为真实模型名，支持链式映射（a->b->c）并检测环。
-// 自映射（a->a）视为未配置别名。带 compact 后缀的模型名先剥离后缀参与解析，结果再补回后缀。
+// 自映射（a->a）视为未配置别名。
 // 返回（解析后的模型名, 是否发生了别名替换, error）。
 func ResolveModelAlias(requested string) (string, bool, error) {
 	if requested == "" || modelAliasSetting.Mapping.Len() == 0 {
 		return requested, false, nil
 	}
-	baseName := requested
-	hasCompactSuffix := strings.HasSuffix(requested, ratio_setting.CompactModelSuffix)
-	if hasCompactSuffix {
-		baseName = strings.TrimSuffix(requested, ratio_setting.CompactModelSuffix)
-	}
-	current := baseName
+	current := requested
 	visited := map[string]bool{current: true}
 	applied := false
 	for {
@@ -55,9 +49,6 @@ func ResolveModelAlias(requested string) (string, bool, error) {
 	}
 	if !applied {
 		return requested, false, nil
-	}
-	if hasCompactSuffix {
-		current = ratio_setting.WithCompactModelSuffix(current)
 	}
 	return current, true, nil
 }

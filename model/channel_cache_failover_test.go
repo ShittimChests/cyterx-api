@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/dto"
+	relaykitdto "github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -31,7 +31,7 @@ func setupFailoverChannelCache(t *testing.T, channels []*Channel, group string, 
 	oldAdvanced := channel2advancedCustomConfig
 	channelsIDM = newIDM
 	group2model2channels = newG2M
-	channel2advancedCustomConfig = make(map[int]*dto.AdvancedCustomConfig)
+	channel2advancedCustomConfig = make(map[int]*relaykitdto.AdvancedCustomConfig)
 	channelSyncLock.Unlock()
 
 	t.Cleanup(func() {

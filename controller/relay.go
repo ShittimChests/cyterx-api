@@ -92,7 +92,14 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	defer func() {
 		if newAPIError != nil {
 			logger.LogError(c, fmt.Sprintf("relay error: %s", common.LocalLogPreview(newAPIError.Error())))
-			newAPIError.SetMessage(common.MessageWithRequestId(newAPIError.Error(), requestId))
+			// 必须在错误日志之后执行：日志与渠道禁用判定始终使用原始上游文案。
+			// 覆写文案与 request id 一次写入：上游错误的 ToOpenAIError() 直接返回 RelayError，
+			// 不读 Err，SetMessage 改不到响应体，必须走 ReplaceMessage
+			if operation_setting.ShouldOverrideUpstreamError(newAPIError) {
+				newAPIError.ReplaceMessage(common.MessageWithRequestId(operation_setting.ErrorOverrideMessage, requestId))
+			} else {
+				newAPIError.SetMessage(common.MessageWithRequestId(newAPIError.Error(), requestId))
+			}
 			switch relayFormat {
 			case types.RelayFormatOpenAIRealtime:
 				helper.WssError(c, ws, newAPIError.ToOpenAIError())
@@ -431,13 +438,26 @@ func processChannelError(c *gin.Context, channelError types.ChannelError, err *t
 			adminInfo["multi_key_index"] = common.GetContextKeyInt(c, constant.ContextKeyChannelMultiKeyIndex)
 		}
 		service.AppendChannelAffinityAdminInfo(c, adminInfo)
+		// 错误日志的 Content 会通过 /api/log/self 回显给发起请求的用户，因此它和 HTTP 响应
+		// 一样是对外出口。覆写生效时这里必须同步覆写，否则客户端在响应里看到
+		// Service Unavailable，转头在日志页仍能读到上游账务原文。原文改记到
+		// admin_info，model.formatUserLogs 会为普通用户剥离整个 admin_info。
+		logContent := err.MaskSensitiveErrorWithStatusCode()
+		if operation_setting.ShouldOverrideUpstreamError(err) {
+			adminInfo["original_error"] = logContent
+			logContent = operation_setting.ErrorOverrideMessage
+			// 与 MaskSensitiveErrorWithStatusCode 保持一致：无状态码时不写 status_code=0
+			if err.StatusCode != 0 {
+				logContent = fmt.Sprintf("status_code=%d, %s", err.StatusCode, logContent)
+			}
+		}
 		other["admin_info"] = adminInfo
 		startTime := common.GetContextKeyTime(c, constant.ContextKeyRequestStartTime)
 		if startTime.IsZero() {
 			startTime = time.Now()
 		}
 		useTimeSeconds := int(time.Since(startTime).Seconds())
-		model.RecordErrorLog(c, userId, channelId, modelName, tokenName, err.MaskSensitiveErrorWithStatusCode(), tokenId, useTimeSeconds, common.GetContextKeyBool(c, constant.ContextKeyIsStream), userGroup, other)
+		model.RecordErrorLog(c, userId, channelId, modelName, tokenName, logContent, tokenId, useTimeSeconds, common.GetContextKeyBool(c, constant.ContextKeyIsStream), userGroup, other)
 	}
 
 }
@@ -475,13 +495,23 @@ func RelayMidjourney(c *gin.Context) {
 			mjErr.Result = "当前分组负载已饱和，请稍后再试，或升级账户以提升服务质量。"
 			statusCode = http.StatusTooManyRequests
 		}
+		description := fmt.Sprintf("%s %s", mjErr.Description, mjErr.Result)
+		channelId := c.GetInt("channel_id")
+		logger.LogError(c, fmt.Sprintf("relay error (channel #%d, status code %d): %s", channelId, statusCode, description))
+		// 这里一律不覆写：能走到 mjErr 的 MidjourneyResponse 全部是本站自产的（参数校验、
+		// 额度不足、DB/IO 失败）。mj-proxy 各 handler 拿到上游响应后是把上游 body 原样
+		// io.Copy 给客户端再 return nil 的，上游错误文案根本不经过这个分支。
+		// 之前在此处按关键词覆写会把本站的 quota_not_enough（mjproxy_handler.go 的
+		// RelaySwapFace / RelayMidjourneySubmit）误伤成 Service Unavailable，
+		// 让用户看不到自己额度不足的真实原因。
+		// MJ 上游文案的出口是被代理的响应体本身与任务的 FailReason，前者要改写就得重写
+		// 上游 JSON，会破坏 mj-proxy 协议兼容性，故不在本功能范围内；后者已在
+		// TaskModel2Dto / coverMidjourneyTaskDto 的读取边界处理。
 		c.JSON(statusCode, gin.H{
-			"description": fmt.Sprintf("%s %s", mjErr.Description, mjErr.Result),
+			"description": description,
 			"type":        "upstream_error",
 			"code":        mjErr.Code,
 		})
-		channelId := c.GetInt("channel_id")
-		logger.LogError(c, fmt.Sprintf("relay error (channel #%d, status code %d): %s", channelId, statusCode, fmt.Sprintf("%s %s", mjErr.Description, mjErr.Result)))
 	}
 }
 
@@ -617,7 +647,7 @@ func RelayTask(c *gin.Context) {
 			processChannelError(c,
 				*types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey,
 					common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()),
-				types.NewOpenAIError(taskErr.Error, types.ErrorCodeBadResponseStatusCode, taskErr.StatusCode))
+				service.APIErrorFromTaskError(taskErr))
 		}
 
 		if taskFailoverEnabled {
@@ -674,10 +704,24 @@ func respondTaskError(c *gin.Context, taskErr *taskdto.TaskError) {
 	if taskErr.StatusCode == http.StatusTooManyRequests {
 		taskErr.Message = "当前分组上游负载已饱和，请稍后再试"
 	}
+	// 仅覆写文案确实取自上游任务平台的错误。这里必须用正向标记 FromUpstream 判定：
+	// 本站自产错误（读 body 失败、解析失败、预扣费额度不足）默认 LocalError == false，
+	// 用 !LocalError 反推会把它们一并掩盖。
+	if taskErr.FromUpstream {
+		if overridden := operation_setting.OverrideUpstreamMessage(taskErr.Message); overridden != taskErr.Message {
+			// 覆写前先记录原始上游文案，后台日志与排障始终可见全文
+			logger.LogError(c, fmt.Sprintf("task upstream error overridden: %s", common.LocalLogPreview(taskErr.Message)))
+			taskErr.Message = overridden
+			// Data 带 json:"data" 会一并返回客户端。当前 task 适配器不往里塞上游 body，
+			// 但覆写掉 Message 却留着一个可能承载上游原文的字段是自相矛盾的，
+			// 与 NewAPIError.ReplaceMessage 清 Metadata/Param 保持一致。
+			taskErr.Data = nil
+		}
+	}
 	c.JSON(taskErr.StatusCode, taskErr)
 }
 
-func shouldRetryTaskRelay(c *gin.Context, channelId int, taskErr *taskdto.TaskError, retryTimes int) bool {
+func shouldRetryTaskRelay(c *gin.Context, channelId int, taskErr *taskdto.TaskError, retryTimes int, failoverEnabled bool) bool {
 	if taskErr == nil {
 		return false
 	}

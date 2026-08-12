@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	taskdto "github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -149,6 +151,141 @@ func TestRelayErrorHandlerKeepsInvalidJSONBodyInDebugLog(t *testing.T) {
 	require.NotContains(t, logBuffer.String(), "[truncated")
 	require.Contains(t, logBuffer.String(), body)
 }
+
+// TestRelayErrorHandlerIOErrorNotMarkedUpstream verifies that a local I/O failure
+// while reading the upstream body is not marked as upstream-origin. The defer-based
+// marker must only cover paths whose message text is sourced from the response body.
+func TestRelayErrorHandlerIOErrorNotMarkedUpstream(t *testing.T) {
+	t.Parallel()
+
+	// A reader that always errors on Read, so io.ReadAll fails before any
+	// upstream-derived message is constructed.
+	resp := &http.Response{
+		StatusCode: http.StatusBadGateway,
+		Body:       io.NopCloser(errReader{}),
+	}
+
+	newAPIError := RelayErrorHandler(context.Background(), resp, false)
+
+	require.NotNil(t, newAPIError)
+	require.False(t, types.IsFromUpstreamError(newAPIError),
+		"I/O failure reading upstream body is a local error and must not be marked upstream")
+}
+
+// The upstream marker must follow the text, not merely the position in the function:
+// a body that fails to parse yields a message this site builds from the status code
+// alone, so it stays local unless the raw body is echoed back into it.
+func TestRelayErrorHandlerMarksUpstreamPerPath(t *testing.T) {
+	cases := []struct {
+		name             string
+		body             string
+		showBodyWhenFail bool
+		wantUpstream     bool
+	}{
+		{
+			name:             "unparseable body without echo stays local",
+			body:             "<html>502 Bad Gateway</html>",
+			showBodyWhenFail: false,
+			wantUpstream:     false,
+		},
+		{
+			name:             "unparseable body echoed into message is upstream",
+			body:             "<html>502 Bad Gateway</html>",
+			showBodyWhenFail: true,
+			wantUpstream:     true,
+		},
+		{
+			name:             "structured provider error is upstream",
+			body:             `{"error":{"message":"You exceeded your current quota","type":"insufficient_quota"}}`,
+			showBodyWhenFail: false,
+			wantUpstream:     true,
+		},
+		{
+			name:             "plain message body is upstream",
+			body:             `{"message":"Please top up your credits"}`,
+			showBodyWhenFail: false,
+			wantUpstream:     true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			withDebugEnabled(t, false)
+
+			resp := &http.Response{
+				StatusCode: http.StatusBadGateway,
+				Body:       io.NopCloser(strings.NewReader(tc.body)),
+			}
+
+			newAPIError := RelayErrorHandler(context.Background(), resp, tc.showBodyWhenFail)
+
+			require.NotNil(t, newAPIError)
+			require.Equal(t, tc.wantUpstream, types.IsFromUpstreamError(newAPIError))
+		})
+	}
+}
+
+// The task relay loop reuses processChannelError for channel auto-disable and for the
+// user-visible error log, so it converts TaskError back into NewAPIError. The upstream
+// marker has to survive that conversion: without it the log always records the raw
+// upstream text, and a user who sees "Service Unavailable" in the response can still
+// read the upstream billing details on the log page.
+func TestAPIErrorFromTaskError(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil task error converts to nil", func(t *testing.T) {
+		t.Parallel()
+		require.Nil(t, APIErrorFromTaskError(nil))
+	})
+
+	t.Run("upstream marker and status code survive the conversion", func(t *testing.T) {
+		t.Parallel()
+
+		taskErr := TaskErrorWrapperUpstream(errors.New("insufficient credits"), "fail_to_fetch_task", http.StatusPaymentRequired)
+		apiErr := APIErrorFromTaskError(taskErr)
+
+		require.NotNil(t, apiErr)
+		require.True(t, types.IsFromUpstreamError(apiErr))
+		require.Equal(t, http.StatusPaymentRequired, apiErr.StatusCode)
+		require.Equal(t, "insufficient credits", apiErr.Error())
+	})
+
+	t.Run("locally produced task errors stay local", func(t *testing.T) {
+		t.Parallel()
+
+		taskErr := TaskErrorWrapperLocal(errors.New("video_id is required"), "invalid_request", http.StatusBadRequest)
+		apiErr := APIErrorFromTaskError(taskErr)
+
+		require.NotNil(t, apiErr)
+		require.False(t, types.IsFromUpstreamError(apiErr))
+		require.Equal(t, "video_id is required", apiErr.Error())
+	})
+
+	// TaskErrorFromAPIError leaves Error unset when the source carried no wrapped error,
+	// so the message is the only text available.
+	t.Run("falls back to Message when Error is nil", func(t *testing.T) {
+		t.Parallel()
+
+		apiErr := APIErrorFromTaskError(&taskdto.TaskError{
+			Message:      "upstream rejected the request",
+			StatusCode:   http.StatusBadGateway,
+			FromUpstream: true,
+		})
+
+		require.NotNil(t, apiErr)
+		require.Equal(t, "upstream rejected the request", apiErr.Error())
+		require.True(t, types.IsFromUpstreamError(apiErr))
+	})
+}
+
+// errReader is an io.ReadCloser whose Read always returns an error.
+type errReader struct{}
+
+func (errReader) Read(p []byte) (int, error) {
+	return 0, io.ErrUnexpectedEOF
+}
+
+func (errReader) Close() error { return nil }
 
 func withDebugEnabled(t *testing.T, enabled bool) {
 	t.Helper()

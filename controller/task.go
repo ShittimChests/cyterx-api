@@ -32,7 +32,8 @@ func GetAllTask(c *gin.Context) {
 	items := model.TaskGetAllTasks(pageInfo.GetStartIdx(), pageInfo.GetPageSize(), queryParams)
 	total := model.TaskCountAllTasks(queryParams)
 	pageInfo.SetTotal(int(total))
-	pageInfo.SetItems(tasksToDto(items, true))
+	// 管理员视图不掩盖上游失败原因，排障需要原文
+	pageInfo.SetItems(tasksToDto(items, true, false))
 	common.ApiSuccess(c, pageInfo)
 }
 
@@ -56,11 +57,13 @@ func GetUserTask(c *gin.Context) {
 	items := model.TaskGetAllUserTask(userId, pageInfo.GetStartIdx(), pageInfo.GetPageSize(), queryParams)
 	total := model.TaskCountAllUserTask(userId, queryParams)
 	pageInfo.SetTotal(int(total))
-	pageInfo.SetItems(tasksToDto(items, false))
+	pageInfo.SetItems(tasksToDto(items, false, true))
 	common.ApiSuccess(c, pageInfo)
 }
 
-func tasksToDto(tasks []*model.Task, fillUser bool) []*dto.TaskDto {
+// tasksToDto 转换任务列表。maskUpstreamFailReason 单独传参而不复用 fillUser：填充用户名
+// 与是否掩盖上游失败原因是两个无关维度，绑在一起会让后续加入新调用方时选错默认值。
+func tasksToDto(tasks []*model.Task, fillUser bool, maskUpstreamFailReason bool) []*dto.TaskDto {
 	var userIdMap map[int]*model.UserBase
 	if fillUser {
 		userIdMap = make(map[int]*model.UserBase)
@@ -82,7 +85,7 @@ func tasksToDto(tasks []*model.Task, fillUser bool) []*dto.TaskDto {
 				task.Username = user.Username
 			}
 		}
-		result[i] = relay.TaskModel2Dto(task)
+		result[i] = relay.TaskModel2Dto(task, maskUpstreamFailReason)
 	}
 	return result
 }
