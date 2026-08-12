@@ -74,11 +74,21 @@ func TestResolveModelAlias(t *testing.T) {
 			wantApplied:  false,
 		},
 		{
-			name:         "alias applies to compact-suffixed model name verbatim",
+			// 别名按完整模型名整体匹配，不对名字做任何分段拆解。
+			name:         "alias matches the full model name verbatim",
 			mapping:      map[string]string{"cinax-openai-compact": "cinax-pro-openai-compact"},
 			requested:    "cinax-openai-compact",
 			wantResolved: "cinax-pro-openai-compact",
 			wantApplied:  true,
+		},
+		{
+			// 基名映射不会命中更长的模型名：解析不再剥离任何后缀，
+			// 带后缀的模型必须显式配置自己的映射。
+			name:         "base-name mapping does not match a longer model name",
+			mapping:      map[string]string{"cinax": "cinax-pro"},
+			requested:    "cinax-openai-compact",
+			wantResolved: "cinax-openai-compact",
+			wantApplied:  false,
 		},
 		{
 			name:         "empty requested model returns as-is",
