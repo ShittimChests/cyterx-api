@@ -150,6 +150,35 @@ func TestRelayErrorHandlerKeepsInvalidJSONBodyInDebugLog(t *testing.T) {
 	require.Contains(t, logBuffer.String(), body)
 }
 
+// TestRelayErrorHandlerIOErrorNotMarkedUpstream verifies that a local I/O failure
+// while reading the upstream body is not marked as upstream-origin. The defer-based
+// marker must only cover paths whose message text is sourced from the response body.
+func TestRelayErrorHandlerIOErrorNotMarkedUpstream(t *testing.T) {
+	t.Parallel()
+
+	// A reader that always errors on Read, so io.ReadAll fails before any
+	// upstream-derived message is constructed.
+	resp := &http.Response{
+		StatusCode: http.StatusBadGateway,
+		Body:       io.NopCloser(errReader{}),
+	}
+
+	newAPIError := RelayErrorHandler(context.Background(), resp, false)
+
+	require.NotNil(t, newAPIError)
+	require.False(t, types.IsFromUpstreamError(newAPIError),
+		"I/O failure reading upstream body is a local error and must not be marked upstream")
+}
+
+// errReader is an io.ReadCloser whose Read always returns an error.
+type errReader struct{}
+
+func (errReader) Read(p []byte) (int, error) {
+	return 0, io.ErrUnexpectedEOF
+}
+
+func (errReader) Close() error { return nil }
+
 func withDebugEnabled(t *testing.T, enabled bool) {
 	t.Helper()
 
